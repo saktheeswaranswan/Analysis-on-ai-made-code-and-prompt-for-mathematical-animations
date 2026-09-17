@@ -1,0 +1,422 @@
+/* ==================================================================== 
+   3D ELLIPSE SHADOW INTEGRAL VISUALIZER 
+   APDE / PROCESSING FOR ANDROID P3D GEOMETRY
+   ------------------------------------------------------------------
+   Ellipse: r(u,v) = C + u*cos(v)*e1 + u*sin(v)*e2 
+   where: 0 <= u <= 1, 0 <= v < 2PI 
+   Surface element: dS = |r_u x r_v| du dv 
+   Unit normal: n = (r_u x r_v) / |r_u x r_v| 
+   Projection onto XY plane: k = (0,0,1) 
+   Shadow element: dA_xy = |n.k| dS 
+   Therefore: A_shadow = integral_S |n.k| dS 
+   For a planar ellipse: A_shadow = projected ellipse area 
+==================================================================== */
+
+float a = 4.0; // semi-axis
+float b = 2.4; // semi-axis
+
+// Tilt angles
+float tiltX = radians(35);
+float tiltY = radians(-25);
+float tiltZ = radians(10);
+
+// Camera
+float camRotX = radians(-25);
+float camRotY = radians(35);
+float zoom = 1.0;
+
+// Animation
+boolean playing = true;
+float animT = 0;
+
+// Touch handling
+float lastX, lastY;
+boolean dragging = false;
+float oldDist = -1; // Pinch zoom
+
+// Resolution
+final int NU = 16;
+final int NV = 64;
+
+// Display flags
+boolean showSurface = true;
+boolean showNormals = true;
+boolean showShadow = true;
+boolean showRays = true;
+boolean showGrid = true;
+
+PVector[][] pts;
+PVector center = new PVector(0, 0, 1.5);
+
+// Ellipse local basis after rotation
+PVector e1;
+PVector e2;
+PVector normal;
+float surfaceArea;
+float shadowArea;
+
+// ================================================================
+// SETUP
+// ================================================================
+void setup() {
+  fullScreen(P3D); // P3D is required for 3D rendering on Android
+  smooth(8);
+  pts = new PVector[NU + 1][NV];
+  
+  calculateBasis();
+  buildSurface();
+  
+  textAlign(LEFT, TOP);
+}
+
+// ================================================================
+// DRAW
+// ================================================================
+void draw() {
+  background(12, 15, 22);
+  
+  if (playing) {
+    animT += 0.015;
+  }
+  
+  calculateBasis();
+  buildSurface();
+  
+  pushMatrix();
+  translate(width * 0.55, height * 0.58);
+  scale(zoom * (min(width, height) / 15.0)); // Adjusted base scale for Android screens
+  rotateX(camRotX);
+  rotateY(camRotY);
+  
+  if (showGrid) drawXYPlane();
+  drawAxes();
+  if (showShadow) drawShadow();
+  if (showRays) drawProjectionRays();
+  if (showSurface) drawEllipseSurface();
+  if (showNormals) drawNormals();
+  drawMainNormal();
+  
+  popMatrix();
+  
+  drawHUD();
+}
+
+// ================================================================
+// BASIS
+// ================================================================
+void calculateBasis() {
+  // Start with ellipse in XY plane
+  e1 = new PVector(1, 0, 0);
+  e2 = new PVector(0, 1, 0);
+  
+  e1 = rotateVector(e1, tiltX, tiltY, tiltZ);
+  e2 = rotateVector(e2, tiltX, tiltY, tiltZ);
+  
+  normal = e1.cross(e2);
+  normal.normalize();
+}
+
+// ================================================================
+// ROTATION
+// ================================================================
+PVector rotateVector(PVector p, float rx, float ry, float rz) {
+  PVector q = p.copy();
+  
+  // X rotation
+  float y = q.y * cos(rx) - q.z * sin(rx);
+  float z = q.y * sin(rx) + q.z * cos(rx);
+  q.y = y; q.z = z;
+  
+  // Y rotation
+  float x = q.x * cos(ry) + q.z * sin(ry);
+  z = -q.x * sin(ry) + q.z * cos(ry);
+  q.x = x; q.z = z;
+  
+  // Z rotation
+  x = q.x * cos(rz) - q.y * sin(rz);
+  y = q.x * sin(rz) + q.y * cos(rz);
+  q.x = x; q.y = y;
+  
+  return q;
+}
+
+// ================================================================
+// SURFACE
+// ================================================================
+void buildSurface() {
+  for (int i = 0; i <= NU; i++) {
+    float u = i / (float) NU;
+    for (int j = 0; j < NV; j++) {
+      float v = TWO_PI * j / NV;
+      
+      float x = a * u * cos(v);
+      float y = b * u * sin(v);
+      
+      PVector p = center.copy();
+      PVector q1 = e1.copy().mult(x);
+      PVector q2 = e2.copy().mult(y);
+      
+      p.add(q1).add(q2);
+      pts[i][j] = p;
+    }
+  }
+}
+
+// ================================================================
+// ELLIPSE SURFACE
+// ================================================================
+void drawEllipseSurface() {
+  noStroke();
+  fill(80, 140, 220, 130);
+  
+  // Performance enhancement: Open beginShape outside the loops
+  beginShape(QUADS);
+  for (int i = 0; i < NU; i++) {
+    for (int j = 0; j < NV; j++) {
+      PVector p1 = pts[i][j];
+      PVector p2 = pts[i + 1][j];
+      PVector p3 = pts[i + 1][(j + 1) % NV];
+      PVector p4 = pts[i][(j + 1) % NV];
+      
+      vertex(p1.x, p1.y, p1.z);
+      vertex(p2.x, p2.y, p2.z);
+      vertex(p3.x, p3.y, p3.z);
+      vertex(p4.x, p4.y, p4.z);
+    }
+  }
+  endShape();
+  
+  // Boundary
+  noFill();
+  stroke(230);
+  strokeWeight(3);
+  beginShape();
+  for (int j = 0; j < NV; j++) {
+    PVector p = pts[NU][j];
+    vertex(p.x, p.y, p.z);
+  }
+  endShape(CLOSE);
+}
+
+// ================================================================
+// XY PLANE
+// ================================================================
+void drawXYPlane() {
+  stroke(80, 90, 110, 100);
+  strokeWeight(1);
+  float size = 8;
+  
+  for (int i = -8; i <= 8; i++) {
+    line(i, -size, 0, i, size, 0);
+    line(-size, i, 0, size, i, 0);
+  }
+  
+  // Plane border
+  noFill();
+  beginShape();
+  vertex(-size, -size, 0);
+  vertex(size, -size, 0);
+  vertex(size, size, 0);
+  vertex(-size, size, 0);
+  endShape(CLOSE);
+}
+
+// ================================================================
+// SHADOW
+// ================================================================
+void drawShadow() {
+  noStroke();
+  fill(80, 200, 120, 70);
+  beginShape();
+  for (int j = 0; j < NV; j++) {
+    PVector p = pts[NU][j];
+    // Orthogonal projection onto XY plane with slight offset to prevent Z-fighting
+    vertex(p.x, p.y, 0.01);
+  }
+  endShape(CLOSE);
+  
+  // Shadow boundary
+  stroke(100, 255, 160);
+  strokeWeight(3);
+  noFill();
+  beginShape();
+  for (int j = 0; j < NV; j++) {
+    PVector p = pts[NU][j];
+    vertex(p.x, p.y, 0.02);
+  }
+  endShape(CLOSE);
+}
+
+// ================================================================
+// PROJECTION RAYS
+// ================================================================
+void drawProjectionRays() {
+  stroke(100, 220, 150, 80);
+  strokeWeight(1);
+  int step = 4;
+  for (int j = 0; j < NV; j += step) {
+    PVector p = pts[NU][j];
+    line(p.x, p.y, p.z, p.x, p.y, 0);
+  }
+}
+
+// ================================================================
+// NORMAL VECTORS
+// ================================================================
+void drawNormals() {
+  int ui = NU / 2;
+  for (int j = 0; j < NV; j += 8) {
+    PVector p = pts[ui][j];
+    PVector n = normal.copy();
+    
+    // Make normal slightly animated
+    float len = 0.65 + 0.15 * sin(animT);
+    n.mult(len);
+    drawArrow(p, PVector.add(p, n), 0.07);
+  }
+}
+
+// ================================================================
+// MAIN NORMAL
+// ================================================================
+void drawMainNormal() {
+  PVector start = center.copy();
+  PVector end = PVector.add(start, PVector.mult(normal, 2.0));
+  drawArrow(start, end, 0.13);
+  
+  // Z projection of normal
+  PVector zEnd = start.copy();
+  zEnd.z += 2.0;
+  
+  stroke(255, 180, 70);
+  strokeWeight(5);
+  line(end.x, end.y, end.z, zEnd.x, zEnd.y, zEnd.z);
+}
+
+// ================================================================
+// ARROW
+// ================================================================
+void drawArrow(PVector p1, PVector p2, float r) {
+  stroke(255, 230, 100);
+  strokeWeight(3);
+  line(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+  
+  PVector d = PVector.sub(p1, p2);
+  d.normalize();
+  d.mult(0.25);
+  
+  PVector side = new PVector(-d.y, d.x, 0);
+  if (side.mag() < 0.01) {
+    side = new PVector(1, 0, 0);
+  }
+  side.normalize();
+  side.mult(r);
+  
+  PVector h1 = PVector.add(p2, d).add(side);
+  PVector h2 = PVector.add(p2, d).sub(side);
+  
+  fill(255, 230, 100);
+  noStroke();
+  beginShape(TRIANGLES);
+  vertex(p2.x, p2.y, p2.z);
+  vertex(h1.x, h1.y, h1.z);
+  vertex(h2.x, h2.y, h2.z);
+  endShape();
+}
+
+// ================================================================
+// AXES
+// ================================================================
+void drawAxes() {
+  strokeWeight(4);
+  // X
+  stroke(230, 80, 80);
+  line(0, 0, 0, 4, 0, 0);
+  // Y
+  stroke(80, 230, 100);
+  line(0, 0, 0, 0, 4, 0);
+  // Z
+  stroke(80, 150, 255);
+  line(0, 0, 0, 0, 0, 4);
+  strokeWeight(1);
+}
+
+// ================================================================
+// AREA CALCULATION
+// ================================================================
+void calculateAreas() {
+  // Planar surface area is simply pi*a*b
+  surfaceArea = PI * a * b;
+  float nz = abs(normal.z);
+  shadowArea = surfaceArea * nz;
+}
+
+// ================================================================
+// HUD
+// ================================================================
+void drawHUD() {
+  calculateAreas();
+  fill(245);
+  textSize(35); // Adjusted for higher density mobile screens
+  
+  text("3D ELLIPSE — SHADOW SURFACE INTEGRAL", 40, 40);
+  
+  textSize(28);
+  text("Surface normal n = (" + nf(normal.x, 1, 3) + ", " + nf(normal.y, 1, 3) + ", " + nf(normal.z, 1, 3) + ")", 40, 95);
+  text("Projection direction k = (0, 0, 1)", 40, 135);
+  text("|n · k| = " + nf(abs(normal.z), 1, 4), 40, 175);
+  text("Ellipse area = πab = " + nf(surfaceArea, 1, 3), 40, 215);
+  text("Shadow area = ∫S |n·k| dS = " + nf(shadowArea, 1, 3), 40, 255);
+  text("Projection: XY plane", 40, 295);
+  
+  textSize(24);
+  text("Drag = rotate camera | Pinch = zoom | Tap = pause/play", 40, height - 60);
+}
+
+// ================================================================
+// ANDROID TOUCH HANDLING
+// ================================================================
+void touchStarted() {
+  if (touches.length == 1) {
+    lastX = touches[0].x;
+    lastY = touches[0].y;
+    dragging = true;
+  } else if (touches.length >= 2) {
+    oldDist = dist(touches[0].x, touches[0].y, touches[1].x, touches[1].y);
+  }
+}
+
+void touchMoved() {
+  if (touches.length == 1) {
+    float dx = touches[0].x - lastX;
+    float dy = touches[0].y - lastY;
+    camRotY += dx * 0.01;
+    camRotX -= dy * 0.01; // Inverted Y-axis to feel more natural on touch
+    
+    lastX = touches[0].x;
+    lastY = touches[0].y;
+  }
+  
+  if (touches.length >= 2) {
+    float newDist = dist(touches[0].x, touches[0].y, touches[1].x, touches[1].y);
+    if (oldDist > 0) {
+      zoom *= newDist / oldDist;
+      zoom = constrain(zoom, 0.2, 5.0);
+    }
+    oldDist = newDist;
+  }
+}
+
+void touchEnded() {
+  if (touches.length == 0) {
+    oldDist = -1;
+  }
+  dragging = false;
+}
+
+// Play/Pause on single tap fallback
+void mouseClicked() {
+  if (!dragging) {
+    playing = !playing;
+  }
+}
